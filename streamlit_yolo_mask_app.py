@@ -1,31 +1,23 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 from ultralytics import YOLO
 import av
 import numpy as np
 import cv2
-import torch
 import tempfile
 import logging
 
 st.set_page_config(page_title="YOLOv8 마스크 탐지", layout="centered")
 st.title("😷 마스크 착용 상태 탐지 - YOLOv8")
 
-# MPS(애플 실리콘 GPU)가 있으면 사용. CPU 대비 약 5배 빠름
-#   cpu 171.1 ms/frame (5.8 FPS)  vs  mps 34.9 ms/frame (28.7 FPS)
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
-
 @st.cache_resource
 def load_model():
-    m = YOLO("best.pt")  # 반드시 같은 폴더에 best.pt 포함
-    m.to(DEVICE)
-    return m
+    return YOLO("best.pt")  # 반드시 같은 폴더에 best.pt 포함
 
 model = load_model()
 
 def detect_image(image_bgr):
-    # verbose=False: 프레임마다 콘솔 로그가 쌓이는 것을 방지
-    results = model(image_bgr, device=DEVICE, verbose=False)
+    results = model(image_bgr)
     return results[0].plot()
 
 mode = st.sidebar.radio("탐지 모드 선택", ["이미지", "웹캠", "동영상"])
@@ -44,14 +36,8 @@ if mode == "이미지":
 
 # 웹캠 탐지
 elif mode == "웹캠":
-    # ★ video_processor_factory 에는 recv() 를 구현한 클래스를 넘겨야 한다.
-    #   구버전 API인 transform() 을 쓰면 라이브러리가
-    #       av.VideoFrame.from_ndarray(self.transform(frame), ...)
-    #   처럼 결과를 한 번 더 감싸는데, transform() 이 이미 VideoFrame 을
-    #   반환하고 있어서 이중 래핑으로 예외가 난다. 예외가 워커 스레드에서
-    #   삼켜지기 때문에 에러 없이 화면만 멈춘 것처럼 보인다.
-    class VideoProcessor(VideoProcessorBase):
-        def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+    class VideoTransformer(VideoTransformerBase):
+        def transform(self, frame: av.VideoFrame) -> av.VideoFrame:
             img = frame.to_ndarray(format="bgr24")
             result = detect_image(img)
             return av.VideoFrame.from_ndarray(result, format="bgr24")
@@ -59,7 +45,7 @@ elif mode == "웹캠":
     try:
       webrtc_streamer(
          key="mask-detect",
-         video_processor_factory=VideoProcessor,
+         video_processor_factory=VideoTransformer,
          media_stream_constraints={"video": True, "audio": False},
          rtc_configuration={
              "iceServers": [
